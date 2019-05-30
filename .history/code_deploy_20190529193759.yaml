@@ -1,0 +1,278 @@
+Parameters:
+  KeyName:
+    Type: String
+    Default: dd
+  WebappSubnets:
+    Type: CommaDelimitedList
+    Default: subnet-c44697bf, subnet-e8756180, subnet-e87f07a4
+  ALBSubnets:
+    Type: CommaDelimitedList
+    Default: subnet-c44697bf, subnet-e8756180, subnet-e87f07a4
+  MinSize:
+    Type: Number
+    Default: 2
+  MaxSize:
+    Type: Number
+    Default: 2
+  VPC:
+    Type: String
+    Default: vpc-aab1aac2
+  AMIID:
+    Type: String
+    Default: ami-08ab3f7e72215fe91
+  NamePrefix:
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    Default: bluegreen
+    Description: Prefix for resource tags made by this template (2-15 chars).
+    MaxLength: 15
+    MinLength: 2
+    Type: String
+Resources:
+  WebappApplication:
+    Type: "AWS::CodeDeploy::Application"
+    Properties:
+      ApplicationName: testApp
+  WebappDeploymentGroup:
+    Type: "AWS::CodeDeploy::DeploymentGroup"
+    Properties:
+      DeploymentGroupName: test-group
+      ApplicationName: !Ref WebappApplication
+      ServiceRoleArn: !GetAtt CodeDeployRole.Arn
+      DeploymentConfigName: CodeDeployDefault.OneAtATime
+      DeploymentStyle:
+        DeploymentType: IN_PLACE
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      LoadBalancerInfo:
+        TargetGroupInfoList:
+          - Name: !GetAtt ALBTargetGroup.TargetGroupName
+      AutoScalingGroups:
+      - Ref: AutoScalingGroup
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow access to ALB from internet
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+  WebappSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow access to Webapp from ALB
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3000'
+        ToPort: '3000'
+        SourceSecurityGroupId:
+          Ref: ALBSecurityGroup
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+  WebappDeploymentBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: 'testtest11324'
+  CodeDeployRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codedeploy.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: allow-autoscaling
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - autoscaling:*
+                Resource: "*"
+        -
+          PolicyName: allow-loadbalance
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - autoscaling:*
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:*
+                Resource: "*"
+  WebappRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+                - "codedeploy.amazonaws.com"
+                - "events.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "allow-webapp-deployment-bucket-bucket"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "s3:getObject"
+                Resource: !Sub arn:aws:s3:::${WebappDeploymentBucket}/*
+              -
+                Effect: Allow
+                Action:
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - logs:*
+                  - sns:*
+                Resource: "*"
+  WebappInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Roles:
+        - Ref: WebappRole
+  WebappLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      ImageId:
+        Ref: AMIID
+      InstanceType: t2.micro
+      KeyName:
+        Ref: KeyName
+      SecurityGroups:
+        - Ref: WebappSecurityGroup
+      IamInstanceProfile:
+        Ref: WebappInstanceProfile
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash -xe
+            # update yum just in case
+            yum update -y
+            # install codedeploy agent
+            yum install -y ruby
+            yum install -y wget
+            cd /home/ec2-user
+            # shoud region change
+            curl -O https://aws-codedeploy-ap-northeast-2.s3.amazonaws.com/latest/install
+            chmod +x ./install
+            ./install auto
+            # cloudwatch
+            sudo yum install -y awslogs
+            wget https://s3.amazonaws.com/aws-codedeploy-us-east-1/cloudwatch/codedeploy_logs.conf
+            sudo cp ./codedeploy_logs.conf /etc/awslogs/awslogs.conf
+            sudo systemctl start awslogsd
+            # get node into yum
+            curl --silent --location https://rpm.nodesource.com/setup_6.x | bash -
+            # install node and npm in one line
+            yum install -y nodejs
+            # install pm2 to restart node app
+            npm i -g pm2@2.4.3
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      MinSize:
+        Ref: MinSize
+      MaxSize:
+        Ref: MaxSize
+      LaunchConfigurationName:
+        Ref: WebappLaunchConfig
+      VPCZoneIdentifier:
+        Ref: WebappSubnets
+      TargetGroupARNs:
+        - Ref: ALBTargetGroup
+      Tags:
+        - Key: Name
+          Value: webapp-example
+          PropagateAtLaunch: true
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        -
+          Type: forward
+          TargetGroupArn:
+            Ref: ALBTargetGroup
+      LoadBalancerArn:
+        Ref: LoadBalancer
+      Port: 80
+      Protocol: HTTP
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: testLoadbalancer
+      Scheme: internet-facing
+      Subnets:
+        Ref: ALBSubnets
+      SecurityGroups:
+        - Ref: ALBSecurityGroup
+      Tags:
+      - Key: Name
+        Value:
+          !Join ["", [ Ref: NamePrefix, "-elb"] ]
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 30
+      HealthCheckIntervalSeconds: 30
+      UnhealthyThresholdCount: 2
+      HealthyThresholdCount: 2
+      HealthCheckPath: /
+      Port: 3000
+      Protocol: HTTP
+      VpcId:
+        Ref: VPC
+Outputs:
+  WebappUrl:
+    Description: Webapp URL
+    Value: !GetAtt LoadBalancer.DNSName
+  DeploymentGroup:
+    Description: Webapp Deployment Group
+    Value: !Ref WebappDeploymentGroup
+  DeploymentBucket:
+    Description: Deployment bucket
+    Value: !Ref WebappDeploymentBucket
+  ApplicationName:
+    Description: CodeDeploy Application name
+    Value: !Ref WebappApplication
+
+    [plugins]
+cwlogs = cwlogs
+[default]
+region = us-east-1
