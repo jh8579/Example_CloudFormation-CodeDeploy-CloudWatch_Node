@@ -2,6 +2,8 @@
 ## CloudFormation 인프라 구성 / CodeDeploy 자동 배포 / CloudWatch 로그 수집
 ![cloudformaion.png](./img/cloudformation.png)
 ## 전제사항
+* Nodejs 프로젝트 존재
+   * 꼭 Nodejs일 필요는 없으나 Java Spring이나 Django로 바뀌게 될 경우 초기 설정이나 쉘 스크립트 수정이 필요
 * CloudFormation을 사용할 수 있는 IAM 계정 존재
 * CodeDeploy, CloudWatch Agent 설치된 AMI
     * AMI 없이 UserData로 설치 가능
@@ -17,8 +19,11 @@
 
 # CloudFormation 인프라 구성
 
-* ### json 또는 yaml 형식으로 인프라 정의
-    * 파라미터   
+## json 또는 yaml 형식으로 인프라 정의
+* ### Parameters
+      * Parameters의 경우 프로젝트마다 다른 설정값이 필요하거나 입력이 필요한 변수에 대한 정의
+      * 예를 들면 subnetId, keyName, autoscaingMaxSize/Minsize 같은 경우에는 사용자마다 다른 ID나 설정값이 필요
+      * 각각 자신의 설정에 맞게 변경
 ```yaml
 Parameters:
   KeyName:
@@ -50,9 +55,12 @@ Parameters:
     MinLength: 2
     Type: String
 ```
-    * role 설정
-        * codedeploy가 loadbalancer와 autoscaling을 이용할 수 있도록 하는 설정
-        * Instance가 cloudwatch와 codedeploy를 이용하고 s3로부터 코드를 가져올 수 있도록 하는 설정
+* ### Resource
+    * Resouces에서는 인프라에 대한 세부사항 모두 정의 
+      * VPC부터 시작해서 모든 인프라 세부 요소에 대해서 정의를 할 수 있고 기존에 있는 리소스를 가져와서 사용할 수도 있다.
+* Role 설정
+   * codedeploy가 loadbalancer와 autoscaling을 이용할 수 있도록 하는 설정
+   * Instance가 cloudwatch와 codedeploy를 이용하고 s3로부터 코드를 가져올 수 있도록 하는 설정
 ```yaml
 Resources:
   CodeDeployRole:
@@ -135,10 +143,10 @@ Resources:
                   - sns:*
                 Resource: "*"
 ```
-    * 인프라 정의
-        * security Group
-        * autoscaling group
-        * loadbalancer
+* 실제 인프라 구성에 대한 정의
+   * security Group
+   * autoscaling group
+   * loadbalancer 등등
 ```yaml
   WebappInstanceProfile:
     Type: "AWS::IAM::InstanceProfile"
@@ -273,9 +281,9 @@ Resources:
       VpcId:
         Ref: VPC
 ```
-    * codedeploy 설정
-        * codedeploy application을 설정
-        * codedeploy group을 이용하여 세부 배포 설정
+* codedeploy 설정
+    * codedeploy application을 설정
+    * codedeploy group을 이용하여 세부 배포 설정
 ```yaml
   WebappApplication:
     Type: "AWS::CodeDeploy::Application"
@@ -301,7 +309,7 @@ Resources:
     Properties:
       BucketName: 'testtest11324'
 ```
-* output 설정
+* ### output
     * loadbalancer dns와 같이 인프라 생성이후에 정의되는 변수들을 출력하여 굳이 콘솔에서 로드밸런서 주소를 확인하지 않아도 된다
 ```yaml
 Outputs:
@@ -371,6 +379,8 @@ hooks:
 
 ```
 * ### start.sh
+   * 빌드된 프로젝트를 실행하는 스크립트로 현재는 Node를 기준으로 작성되어 있음
+   * 각각 자신의 빌드된 프로젝트를 실행하는 코드로 바꿔주면 똑같이 적용 가능
 ```
 #!/usr/bin/env bash
 
@@ -379,13 +389,14 @@ sudo pm2 stop node-app
 sudo pm2 start /opt/webapp/index.js -i 0 --name "node-app"
 ```
 * ### stop.sh
+   * 빌드된 프로젝트를 중지하는 스크립트로 현재는 Node를 기준으로 작성되어 있음
+   * 각각 자신의 빌드된 프로젝트를 중지하는 코드로 바꿔주면 똑같이 적용 가능
 ```
 #!/usr/bin/env bash
 
 sudo pm2 stop node-app
 sleep 10
 ```
-
 
 ## 명령어
 ```
@@ -394,8 +405,21 @@ aws deploy create-deployment --application-name testApp  --s3-location bucket="t
 
 # 배포 관련 로그 확인
 
-## CloudWatch Logs 관련 설정 파일
+## UserData
 * UserData 설정
+   * Autoscaling Instance 생성시 자동 실행되는 스크립트
+   * 현재 CloudFormation 정의 파일에 사용됨 - code_deploy.yaml
+   * cloudwatch를 실행하는 코드 아래로는 Node 기준으로 작성되어 있음
+   * Node 관련 코드 아래로는 자신의 프로젝트 실행을 위한 Dependcies 설치 코드로 바꿔주면 똑같이 적용 가능
+   * 예를 들어 빌드 파일이 jar 형식인 경우에는 맞는 버젼의 java를 설치
+* AMI
+   * userdata를 사용하지 않고 스크립트 내용을 직접 인스턴스의 실행하여 AMI로 빌드하여 사용 가능
+   * 위와 같은 경우에는 대신 autoscaling에 사용되는 AMI ID를 자신이 만든 AMI를 사용해야 함
+* 스크립트 내용
+   * codedeploy, cloudwathch logs agent 설치(필수)
+   * cloudwatch 설정 파일 생성(필수)
+   * dependcies 설치(상황에 따른 설치 필요)
+   * pm2 설치(노드 시작/중단 사용하기 위함)(상황에 따른 설치 필요)
 ```yaml
 UserData:
         Fn::Base64:
@@ -420,26 +444,29 @@ UserData:
             sudo cp ./codedeploy_cli.conf /etc/awslogs/awscli.conf
             # start cloudwatch agent
             sudo systemctl start awslogsd
-            # get node into yum
+            ################### Node Dependcies ###############################
             curl --silent --location https://rpm.nodesource.com/setup_6.x | bash -
             # install node and npm in one line
             yum install -y nodejs
             # install pm2 to restart node app
             npm i -g pm2@2.4.3
+            ###################################################################
 ```
-* AMI 없이 인스턴스를 생성할 때 userdata를 사용
-    * codedeploy, cloudwathch logs agent 설치
-    * cloudwatch 설정 파일 생성
-    * dependcies 설치(Node or Java)
-    * pm2 설치(노드 시작/중단 사용하기 위함)
-
+## CloudWatch 로그 설정
+   * cloudwatch에 로그를 남기기 위한 설정 파일들
+   * awscli.conf, awslogs.conf 두 개로 구성
+   * awscli.conf
+      * region이나 plugin 정의
+   * awslogs.conf
+      * 로그로 남기고 싶은 파일에 대한 정의
+      * application 로그도 가능
 ```
 #/etc/awslogs/awscli.conf
 
 [plugins]
-cwlogs = cwlogs
-[default]       ## plugin 지정
-region = ap-northeast-2     ## cloudwatch region 지정
+cwlogs = cwlogs       ## plugin 지정
+[default]      
+region = ap-northeast-2    ## cloudwatch region 지정
 ```
 
 ```
@@ -467,9 +494,8 @@ file = /opt/codedeploy-agent/deployment-root/deployment-logs/codedeploy-agent-de
 log_stream_name = {instance_id}-codedeploy-deployments-log
 log_group_name = codedeploy-deployments-log
 ```
-* applicaion 로그도 해당 형식으로 입력 시 확인 가능
 
-* ## CloudWatch가 제대로 작동 안할 시 확인을 위한 로그 위치
+* ### CloudWatch가 제대로 작동 안할 시 확인을 위한 로그 위치
 ```
-var/log/awslogs.log
+/var/log/awslogs.log
 ```
